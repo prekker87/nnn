@@ -320,6 +320,25 @@ typedef struct entry {
 #endif
 } *pEntry;
 
+/* 
+ * This struct holds the currently displayed file's metadata 
+ * so it can be accessed independently of the status bar rendering.
+ * It is updated whenever the statusbar() function is called.
+ */
+typedef struct {
+    char name[PATH_MAX];
+    char perms[12];
+    off_t size;
+    time_t mtime;
+    char extension[8];
+    int is_symlink;
+} FileStatus;
+
+FileStatus g_current_status;
+
+char g_current_status_text[1024];
+
+
 /* Selection marker */
 typedef struct {
 	char *startpos;
@@ -1451,6 +1470,19 @@ static void handle_key_resize(void)
 	refresh();
 }
 
+void speak(const char *text)
+{
+#ifdef __APPLE__
+// Először leállítjuk az összes futó 'say' folyamatot
+    system("killall say 2>/dev/null");
+    char say_cmd[PATH_MAX + 50];
+    if (text[0] != '\0') {
+	     snprintf(say_cmd, sizeof(say_cmd), "say -v Mariska \"%s\" &", text);
+        system(say_cmd);
+    }
+#endif
+}
+
 /* Clear the old prompt from the info line to the botton of the screen */
 static void clearoldprompt(void)
 {
@@ -1465,6 +1497,7 @@ static inline void printmsg_nc(const char *msg)
 {
 	tolastln();
 	addstr(msg);
+	speak(msg);
 	clrtoeol();
 }
 
@@ -2511,9 +2544,9 @@ static int spawn(char *file, char *arg1, char *arg2, char *arg3, ushort_t flag)
 		/* Suppress stdout and stderr */
 		if (flag & F_NOTRACE) {
 			if (flag & F_NOSTDIN)
-				dup2(devnullfd, STDIN_FILENO); // NOLINT
-			dup2(devnullfd, STDOUT_FILENO); // NOLINT
-			dup2(devnullfd, STDERR_FILENO); // NOLINT
+				dup2(devnullfd, STDIN_FILENO);
+			dup2(devnullfd, STDOUT_FILENO);
+			dup2(devnullfd, STDERR_FILENO);
 		} else if (flag & F_TTY) {
 			/* If stdout has been redirected to a non-tty, force output to tty */
 			if (!isatty(STDOUT_FILENO)) {
@@ -2725,6 +2758,7 @@ static bool cpmvrm_selection(enum action sel, char *path)
 	default: /* SEL_TRASH, SEL_RM_RF */
 		if (!rmmulstr(g_buf, trashcmd && (sel == SEL_TRASH))) {
 			printmsg(messages[MSG_CANCEL]);
+			speak("Törlés");	
 			return FALSE;
 		}
 	}
@@ -3818,7 +3852,7 @@ static char *xreadline(const char *prefill, const char *prompt)
 #endif
 			case KEY_LEFT:
 				if (pos > 0)
-					--pos;
+					--pos;				
 				break;
 			case KEY_RIGHT:
 				if (pos < len)
@@ -5628,6 +5662,8 @@ static bool launch_app(char *newpath)
 {
 	int r = F_NORMAL;
 	char *tmp = newpath;
+	// Frank
+ //   speak(newpath); // <<--- Itt beszéli ki, mit fog megnyitni
 
 	mkpath(plgpath, utils[UTIL_LAUNCH], newpath);
 
@@ -6208,8 +6244,11 @@ static void send_to_explorer(int *presel)
 }
 #endif
 
+
+
 static void move_cursor(int target, int ignore_scrolloff)
 {
+
 	target = MAX(0, MIN(ndents - 1, target));
 	last_curscroll = curscroll;
 	last = cur;
@@ -6233,23 +6272,60 @@ static void move_cursor(int target, int ignore_scrolloff)
 	curscroll = MIN(curscroll, MIN(cur, ndents - ONSCREEN));
 	curscroll = MAX(curscroll, MAX(cur - (ONSCREEN - 1), 0));
 
-#ifndef NOFIFO
-	if (!g_state.fifomode)
-		notify_fifo(FALSE); /* Send hovered path to NNN_FIFO */
-#endif
+//	speak(path);
 }
 
 static void handle_screen_move(enum action sel)
 {
 	switch (sel) {
-	case SEL_NEXT:
+
+	case SEL_NEXT: {
+		//printf("[DEBUG] cur = %d\n", cur);
 		if (cfg.rollover || (cur != ndents - 1))
 			move_cursor((cur + 1) % ndents, 0);
+		// Debug kiíratás
+		//printf("[DEBUG] cur = %d\n", cur);
+		//printf("[DEBUG] reached SEL_NEXT case\n");
+
+		//if (cur < ndents && pdents[cur].name)
+		//	printf("[DEBUG] pdents[%d].name = %s\n", cur, pdents[cur].name);
+		//else
+		//printf("[DEBUG] pdents[%d].name = (nul or out of bounds)\n", cur);
+		//speak(pdents[cur].name);	
+		mode_t m = pdents[cur].mode;
+		char combined_text[PATH_MAX + 50]; // Elég nagy buffer a szövegnek
+ 	    combined_text[0] = '\0'; // Inicializáljuk üres stringként
+
+		// Az elérési út vagy név hozzáfűzése
+	    strcat(combined_text, pdents[cur].name);
+
+		if (S_ISDIR(m)) {
+			strcat(combined_text, "directory ");
+		} else if (S_ISREG(m) && (m & S_IXUSR)) {
+			strcat(combined_text, "executable ");
+		}
+
+ 	   // Egyetlen speak hívás az összes szöveggel
+	    speak(combined_text);
+
+//		speak(pdents[cur].name);
 		break;
-	case SEL_PREV:
+	}	
+	case SEL_PREV:  {
+		mode_t m = pdents[cur].mode;
 		if (cfg.rollover || cur)
 			move_cursor((cur + ndents - 1) % ndents, 0);
+		
+
+
+		if (S_ISDIR(m)) {
+			speak("dir");
+		} else if (S_ISREG(m) && (m & S_IXUSR)) {
+			speak("ex");
+		}
+		speak(pdents[cur].name);
 		break;
+	}	
 	case SEL_PGDN:
 		move_cursor(curscroll + (ONSCREEN - 1), 1);
 		curscroll += ONSCREEN - 1;
@@ -6382,6 +6458,10 @@ static int handle_context_switch(enum action sel)
 	default: /* SEL_CTXN */
 		if (sel >= SEL_CTX1) /* CYCLE keys are lesser in value */
 			r = sel - SEL_CTX1; /* Save the next context id */
+
+		char msg[64];
+		snprintf(msg, sizeof(msg), "Slot %d selected", r + 1);
+		speak(msg);
 
 		if (cfg.curctx == r) {
 			if (sel == SEL_CYCLE)
@@ -6550,12 +6630,27 @@ static bool set_time_type(int *presel)
 
 	return ret;
 }
-
+// erre csak azért van szükség hogy meglehessen hívni a statusbar függvény ből
+void update_current_status_text(void);
 static void statusbar(char *path)
 {
 	int i = 0, len = 0;
 	char *ptr;
 	pEntry pent = &pdents[cur];
+
+	strncpy(g_current_status.name, pent->name, PATH_MAX);
+strncpy(g_current_status.perms, get_lsperms(pent->mode), 12);
+g_current_status.size = pent->size;
+g_current_status.mtime = pent->sec;
+
+char *ext = xextension(pent->name, pent->nlen - 1);
+if (ext)
+    strncpy(g_current_status.extension, ext, 8);
+else
+    g_current_status.extension[0] = '\0';
+
+g_current_status.is_symlink = S_ISLNK(pent->mode);
+
 
 	if (!ndents) {
 		printmsg("0/0");
@@ -6661,7 +6756,64 @@ static void statusbar(char *path)
 	attroff(COLOR_PAIR(cfg.curctx + 1));
 	/* Place HW cursor on current for Braille systems */
 	tocursor();
+update_current_status_text();
 }
+
+void update_current_status_text(void) {
+    char mtime_str[64];
+    struct tm *tm_info = localtime(&g_current_status.mtime);
+    strftime(mtime_str, sizeof(mtime_str), "%Y-%m-%d %H:%M:%S", tm_info);
+
+    snprintf(
+        g_current_status_text,
+        sizeof(g_current_status_text),
+        "Name: %s. Size: %lld bytes. Permissions: %s. Extension: %s. Modified: %s.",
+        g_current_status.name,
+        (long long)g_current_status.size,
+        g_current_status.perms,
+        g_current_status.extension,
+        mtime_str
+    );
+}
+
+
+//void speak_current_file(void) {
+  //  printf("Name: %s\n", g_current_status.name);
+//    printf("Size: %lld bytes\n", (long long)g_current_status.size);
+//    printf("Permissions: %s\n", g_current_status.perms);
+//.   printf("Extension: %s\n", g_current_status.extension);
+//    printf("Modified: %s", ctime(&g_current_status.mtime));
+//}
+
+//void speak_current_file(void) {
+//    char text[1024]; // Elég nagy buffer
+//    char mtime_str[64];
+//
+    // Átalakítjuk az időt szöveggé
+//    struct tm *tm_info = localtime(&g_current_status.mtime);
+//    strftime(mtime_str, sizeof(mtime_str), "%Y-%m-%d %H:%M:%S", tm_info);
+
+    // Összerakjuk a szöveget
+//    snprintf(
+//        text,
+//        sizeof(text),
+//        "Name: %s. Size: %lld bytes. Permissions: %s. Extension: %s. Modified: %s.",
+//        g_current_status.name,
+//        (long long)g_current_status.size,
+//        g_current_status.perms,
+//        g_current_status.extension,
+//        mtime_str
+//    );
+
+    // Ez csak debughoz (ha akarod látni)
+//    printf("%s\n", text);
+
+    // Felolvasás
+ //   char cmd[1200];
+ //   snprintf(cmd, sizeof(cmd), "say \"%s\"", text);
+ //   system(cmd);
+//}
+
 
 static inline void markhovered(void)
 {
@@ -8127,6 +8279,7 @@ nochange:
 		case SEL_SHELL: // fallthrough
 		case SEL_LAUNCH: // fallthrough
 		case SEL_PROMPT:
+			speak("shell inditása");
 			r = handle_cmd(sel, path, newpath);
 
 			/* Continue in type-to-nav mode, if enabled */
@@ -8187,6 +8340,7 @@ nochange:
 		case SEL_QUIT:
 		case SEL_QUITERR:
 			if (sel == SEL_QUITCTX) {
+				speak(" Ablak bezárása");
 				int ctx = cfg.curctx;
 
 				for (r = (ctx - 1) & (CTX_MAX - 1);
@@ -8215,9 +8369,12 @@ nochange:
 						break;
 					}
 
+
 				if (!(r == CTX_MAX || xconfirm(r)))
 					break; // fallthrough
 			}
+			
+			speak("Minden kontextus ablak bezárva. További szép napot! Jó munkát!");
 
 			/* CD on Quit */
 			tmp = getenv("NNN_TMPFILE");
@@ -8832,6 +8989,15 @@ int main(int argc, char *argv[])
 		case 's':
 			if (env_opts_id < 0)
 				xstrsncpy(curssn, optarg, NAME_MAX);
+
+			/* Say the name of the currently selected file or directory */
+			{
+			//	char cmd[PATH_MAX + 50];
+			//	snprintf(cmd, sizeof(cmd), "say \"%s\"", g_ctx[cfg.curctx].c_name);
+		//		system(cmd);
+	speak(g_ctx[cfg.curctx].c_name);
+		
+			}
 			break;
 		case 'S':
 			g_state.prstssn = 1;
