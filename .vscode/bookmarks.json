@@ -1,0 +1,19 @@
+{
+	"files": [
+		{
+			"path": "src/nnn.c",
+			"bookmarks": [
+				{
+					"line": 1472,
+					"column": 0,
+					"label": "speak függvény"
+				},
+				{
+					"line": 6634,
+					"column": 0,
+					"label": "Statusbar függvény"
+				}
+			]
+		}
+	]
+}
